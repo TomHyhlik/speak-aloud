@@ -19,6 +19,7 @@ Options:
   -w, --wait         Block until speaking has finished
   -q, --queue        Queue after current speech instead of interrupting it
       --raw          Don't strip Markdown
+  -L, --last         Open the player window on the newest saved recording and exit
   -s, --stop         Stop all speech and exit
   -n, --dry-run      Print the cleaned text instead of speaking it
   -h, --help         Show this help
@@ -37,7 +38,7 @@ lang="${SPEAK_LANG:-en}"
 rate="${SPEAK_RATE:-0}"
 voice="${SPEAK_VOICE:-}"
 engine="${SPEAK_ENGINE:-}"
-wait=0 queue=0 raw=0 dry=0 file=""
+wait=0 queue=0 raw=0 dry=0 last=0 file=""
 args=()
 
 stop_speech() {
@@ -58,7 +59,8 @@ while (($#)); do
     -w|--wait)   wait=1; shift ;;
     -q|--queue)  queue=1; shift ;;
     --raw)       raw=1; shift ;;
-    -s|--stop)   stop_speech; exit 0 ;;
+    -L|--last)   last=1; shift ;;
+    -s|--stop)   stop_speech; rm -f "${XDG_RUNTIME_DIR:-/tmp}/speak-aloud.pos"; exit 0 ;;
     -n|--dry-run) dry=1; shift ;;
     -h|--help)   usage; exit 0 ;;
     --)          shift; args+=("$@"); break ;;
@@ -66,6 +68,15 @@ while (($#)); do
     *)           args+=("$1"); shift ;;
   esac
 done
+
+if ((last)); then
+  newest="$(ls -1 "$home/records"/*.mp3 2>/dev/null | tail -n1 || true)"
+  [[ -n "$newest" ]] || { echo "speak.sh: no saved recordings yet" >&2; exit 1; }
+  stop_speech
+  setsid python3 "$(dirname "$(readlink -f "$0")")/player.py" "$newest" </dev/null >/dev/null 2>&1 &
+  echo $! >> "$pidfile"
+  exit 0
+fi
 
 if [[ -n "$file" ]]; then
   text="$(cat -- "$file")"
@@ -125,17 +136,42 @@ length_scale="$(awk -v r="$rate" 'BEGIN { printf "%.2f", 1 - r / 200 }')"
 sample_rate="$(perl -ne 'print $1 if /"sample_rate"\s*:\s*(\d+)/' "$model.json")"
 
 ((queue)) || stop_speech
+mkdir -p "$home"
 
+# The speech is rendered to a new MP3 in $SPEAK_DIR (the 10 newest are kept,
+# older ones deleted), then a small window with playback controls plays it. The window stays open after
+# the speech ends; the queue lock is released when playback finishes.
 export SPEAK_TEXT="$text" SPEAK_MODEL="$model" SPEAK_PIPER="$piper" \
        SPEAK_LS="$length_scale" SPEAK_SR="${sample_rate:-22050}" \
-       SPEAK_LOCK="$lockfile"
+       SPEAK_LOCK="$lockfile" SPEAK_DIR="$home/records" SPEAK_KEEP="${SPEAK_KEEP:-10}" \
+       SPEAK_PLAYER="$(dirname "$(readlink -f "$0")")/player.py" \
+       SPEAK_DONE="${XDG_RUNTIME_DIR:-/tmp}/speak-aloud.done.$$"
+rm -f "$SPEAK_DONE"
 player='
   exec 9>"$SPEAK_LOCK"; flock 9
+  mkdir -p "$SPEAK_DIR"
+  mp3="$SPEAK_DIR/$(date +%Y%m%d-%H%M%S-%N).mp3"
+  tmp="$mp3.part"
   printf "%s\n" "$SPEAK_TEXT" \
     | "$SPEAK_PIPER" -m "$SPEAK_MODEL" --length-scale "$SPEAK_LS" --output-raw 2>/dev/null \
-    | aplay -q -r "$SPEAK_SR" -f S16_LE -t raw -c 1 - 2>/dev/null
+    | gst-launch-1.0 -q fdsrc fd=0 ! \
+        rawaudioparse format=pcm pcm-format=s16le sample-rate="$SPEAK_SR" num-channels=1 ! \
+        audioconvert ! lamemp3enc target=bitrate cbr=true bitrate=64 ! filesink location="$tmp" \
+        >/dev/null 2>&1
+  [ -s "$tmp" ] || { rm -f "$tmp"; exit 1; }
+  mv -f "$tmp" "$mp3"
+  printf "%s\n" "$SPEAK_TEXT" | tr "\n" " " | cut -c1-120 > "${mp3%.mp3}.txt"
+  # Keep only the newest $SPEAK_KEEP recordings.
+  ls -1 "$SPEAK_DIR"/*.mp3 | head -n -"$SPEAK_KEEP" | while read -r old; do
+    rm -f "$old" "${old%.mp3}.txt"
+  done
+  exec python3 "$SPEAK_PLAYER" "$mp3" >/dev/null 2>&1
 '
 # Each player runs in its own process group, recorded so --stop can kill it.
 setsid bash -c "$player" </dev/null >/dev/null 2>&1 &
 echo $! >> "$pidfile"
-((wait)) && wait $! || true
+if ((wait)); then
+  # Return when playback has ended (the window stays open for replay).
+  while [[ ! -e "$SPEAK_DONE" ]] && kill -0 $! 2>/dev/null; do sleep 0.2; done
+  rm -f "$SPEAK_DONE"
+fi

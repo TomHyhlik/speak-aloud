@@ -1,6 +1,6 @@
 ---
 name: speak-aloud
-description: Say the response out loud through the machine's speakers. Use whenever the user asks to hear the answer — a bare "aloud" (speak the previous response), "tell me aloud", "say it aloud", "read it out loud", "speak to me", "say that", "read this to me", "voice mode on" — or asks to stop talking ("stop speaking", "shut up", "be quiet", "voice mode off").
+description: Say the response out loud through the machine's speakers. Use whenever the user asks to hear the answer — a bare "aloud" (speak the previous response), "tell me aloud", "say it aloud", "read it out loud", "speak to me", "say that", "read this to me", "aloud last", "voice mode on" — or asks to stop talking ("stop speaking", "shut up", "be quiet", "voice mode off").
 ---
 
 # Speak the response aloud
@@ -13,6 +13,21 @@ Speech goes through the user's own tool:
 
 It speaks with Piper (a natural local voice), falling back to `spd-say`,
 strips Markdown, and by default interrupts anything already being spoken.
+Each speech is saved as an MP3 in `~/.local/share/speak-aloud/records/` (the
+10 newest are kept) and a small window opens with pause, replay, a seek
+slider, and Up/Down arrows to browse earlier recordings.
+
+## "Aloud last" reopens the last recording
+
+When the user says "aloud last", "play the last one", "replay it" or similar,
+don't regenerate anything: just open the player window on the newest saved
+recording (they can browse older ones with the Up/Down arrows):
+
+```bash
+/home/tomas/Repos/speak-aloud/speak.sh --last
+```
+
+Reply on screen with one short line such as "Opened the last recording."
 
 ## "Aloud" on its own means the last response
 
